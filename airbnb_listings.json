@@ -1,0 +1,83 @@
+[
+  {
+    "category": "Popular homes in Kuala Lumpur",
+    "listings": [
+      {
+        "title": "Untitled listing",
+        "price": "$118Showpricebreakdownfor2nights$118for2nightsFreecancellation",
+        "location": "",
+        "rating": "4.91",
+        "url": "https://www.airbnb.com/rooms/30302225",
+        "details": {
+          "amenities": "",
+          "baths": "1",
+          "bedrooms": "1",
+          "beds": "1",
+          "description": "",
+          "guests": "2",
+          "home_span": "Popular homes in Kuala Lumpur"
+        }
+      }
+    ]
+  },
+  {
+    "category": "Available next month in Bangkok",
+    "listings": [
+      {
+        "title": "Untitled listing",
+        "price": "$60Showpricebreakdownfor2nights$60for2nightsFreecancellation",
+        "location": "",
+        "rating": "4.94",
+        "url": "https://www.airbnb.com/rooms/865644099007672422",
+        "details": {
+          "amenities": "",
+          "baths": "20",
+          "description": "218 located in Old Town Bangkok, surrounded Thai historical spots ; short walk to Grand Palace, Wat Pho and many attractionsOld commercial building is newly renovated The cozy private room on 3rd floor (no elevator) with king sized bed and en-suited bathroom1st Floor common area :-living room with pantry equipped with TV, wifi , air-conditioner, sofa, armchair, table, microwave, kettle,toaster and fridge.(kitchenware is not suitable for serious cooking as home cook)The spaceThe room will be one private room with en-suite bathroom on 3rd floor, very comfortable mattress ton ensure your good sleep , small sitting areaDuring your stayMy co-host live nearby and will be accessible to help with whatever you need",
+          "guests": "94",
+          "home_span": "Available next month in Bangkok"
+        }
+      }
+    ]
+  },
+  {
+    "category": "Stay in Seoul",
+    "listings": [
+      {
+        "title": "Untitled listing",
+        "price": "$64Showpricebreakdownfor2nights$64for2nightsFreecancellation",
+        "location": "",
+        "rating": "4.93",
+        "url": "https://www.airbnb.com/rooms/955744892195764611",
+        "details": {
+          "amenities": "",
+          "baths": "1",
+          "beds": "1",
+          "description": "Enjoy a comfortable stay in a quiet accommodation right in the heart of the city* This is a guest room in a two-story house with a shared bathroom and shared kitchen.(A total of 10 guest rooms, maximum 17 guests)* There are 5 shared bathrooms/toilets only.(1 bathroom for every 2 guest rooms/approximately 1 for every 3 guests)Relax in a quiet accommodation in the center.* This is a guest room in a two-story house with a shared bathroom and shared kitchen. (Total number of guest rooms: 10, maximum number of guests: 17)* 5 shared bathrooms/toilets are available without any inconvenience. (1 per 2 guest rooms/1 per 3 people maximum)Registration DetailsRegion of Issuance: 서울특별시, 용산구License Type: 외국인관광도시민박업License Number: 2023-000056",
+          "guests": "93",
+          "home_span": "Stay in Seoul"
+        }
+      }
+    ]
+  },
+  {
+    "category": "Available next month in Tokyo",
+    "listings": [
+      {
+        "title": "Untitled listing",
+        "price": "$159Showpricebreakdownfor2nights$159for2nights",
+        "location": "",
+        "rating": "4.93",
+        "url": "https://www.airbnb.com/rooms/1368852879726685770",
+        "details": {
+          "amenities": "",
+          "baths": "1",
+          "bedrooms": "1",
+          "beds": "1",
+          "description": "The room is located at 3 minutes from Nakano-shinbashi station by foot. It is 6minutes (3 stations, 3km) from Shinjuku station when you take the direct train.To be honest, the building is quite old and the room is at 3rd floor without elevator.The room has 15 square meters which has enough room for one or two people. the bed size is 140×200cm.There is not washlet (bidet seat) or television.Supermarket, convenience store, drug store, coin laundry, café, are all in 3-5minutes by foot.Registration DetailsHotels and Inns Business Act | 中野区保健所 | 7中健衛環第281号",
+          "guests": "2",
+          "home_span": "Available next month in Tokyo"
+        }
+      }
+    ]
+  }
+]
