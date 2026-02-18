@@ -20,7 +20,7 @@ func main() {
 	maxTotalReqDomain := flag.Int("max-total-domain", 300, "Max total requests per domain")
 	timeoutSec := flag.Int("timeout-sec", 30, "Timeout per request (seconds)")
 	retries := flag.Int("retries", 2, "Retry count per page")
-	output := flag.String("output", "airbnb_listings.json", "Output JSON file path")
+	output := flag.String("output", "airbnb_listings.csv", "Output CSV file path")
 	maxSpans := flag.Int("max-spans", 0, "Maximum homepage spans to click (0 = all discovered)")
 	pagesPerSpan := flag.Int("pages-per-span", 2, "Pages to scrape after each span click")
 	cardsPerPage := flag.Int("cards-per-page", 5, "Number of listing cards to capture per page")

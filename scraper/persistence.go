@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,11 +40,7 @@ func (s *Scraper) saveResults() error {
 		groups[idx].Listings = append(groups[idx].Listings, listing)
 	}
 
-	data, err := json.MarshalIndent(groups, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(s.cfg.OutputFile, data, 0o644); err != nil {
+	if err := s.saveResultsToCSV(groups); err != nil {
 		return err
 	}
 
@@ -53,6 +50,71 @@ func (s *Scraper) saveResults() error {
 		}
 	}
 
+	return nil
+}
+
+func (s *Scraper) saveResultsToCSV(groups []categoryGroup) error {
+	file, err := os.Create(s.cfg.OutputFile)
+	if err != nil {
+		return fmt.Errorf("create output csv: %w", err)
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	header := []string{
+		"category",
+		"title",
+		"price",
+		"location",
+		"rating",
+		"url",
+		"description",
+		"details_json",
+	}
+	if err := writer.Write(header); err != nil {
+		return fmt.Errorf("write csv header: %w", err)
+	}
+
+	for _, group := range groups {
+		category := strings.TrimSpace(group.Category)
+		if category == "" {
+			category = "Uncategorized"
+		}
+		for _, listing := range group.Listings {
+			description := ""
+			details := listing.Details
+			if details == nil {
+				details = map[string]string{}
+			}
+			if listing.Details != nil {
+				description = strings.TrimSpace(listing.Details["description"])
+			}
+			detailsJSON, err := json.Marshal(details)
+			if err != nil {
+				return fmt.Errorf("marshal listing details for csv %s: %w", listing.URL, err)
+			}
+
+			row := []string{
+				category,
+				listing.Title,
+				listing.Price,
+				listing.Location,
+				listing.Rating,
+				listing.URL,
+				description,
+				string(detailsJSON),
+			}
+			if err := writer.Write(row); err != nil {
+				return fmt.Errorf("write csv row %s: %w", listing.URL, err)
+			}
+		}
+	}
+
+	if err := writer.Error(); err != nil {
+		return fmt.Errorf("flush csv: %w", err)
+	}
 	return nil
 }
 
