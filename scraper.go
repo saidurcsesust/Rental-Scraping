@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +44,8 @@ type homeSpan struct {
 }
 
 var homeCategoryLabelRe = regexp.MustCompile(`(?i)^(popular homes in|available next month in|stay in)\s+.+$`)
+var homeCategoryLocationRe = regexp.MustCompile(`(?i)^(?:popular homes in|available next month in|stay in)\s+(.+)$`)
+var moneyAmountRe = regexp.MustCompile(`\$\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)`)
 
 type categoryListingSeed struct {
 	Label string
@@ -218,6 +222,15 @@ func (s *Scraper) scrapeHomepageCategoriesDirect(ctx context.Context) ([]models.
 			const blocked = new Set(['log in', 'sign up', 'search', 'filters', 'map', 'next', 'previous', 'help', 'host', 'become a host', 'airbnb your home']);
 			const out = [];
 			const seen = new Set();
+			const uniqueLinks = (nodes) => {
+				const byHref = new Map();
+				for (const n of nodes || []) {
+					const href = normalize(n && n.href ? n.href : '');
+					if (!href || byHref.has(href)) continue;
+					byHref.set(href, n);
+				}
+				return Array.from(byHref.values());
+			};
 
 			for (const btn of document.querySelectorAll('button, [role="button"]')) {
 				const t = normalize(btn.textContent).toLowerCase();
@@ -246,11 +259,30 @@ func (s *Scraper) scrapeHomepageCategoriesDirect(ctx context.Context) ([]models.
 
 			for (const item of chosen) {
 				const label = item.label;
-				let container = item.node.closest('section, article, main, div');
-				if (!container) container = document.body;
-				let links = Array.from(container.querySelectorAll('a[href*="/rooms/"]'));
-				if (links.length === 0 && container.parentElement) {
-					links = Array.from(container.parentElement.querySelectorAll('a[href*="/rooms/"]'));
+				let links = [];
+
+				// Airbnb category rows can be rendered in sibling carousels; walk up until we find enough cards.
+				let container = item.node;
+				for (let depth = 0; depth < 7 && container; depth++) {
+					const candidate = uniqueLinks(container.querySelectorAll('a[href*="/rooms/"]'));
+					if (candidate.length > links.length) {
+						links = candidate;
+					}
+					if (links.length >= maxPerCategory) break;
+					container = container.parentElement;
+				}
+
+				// Fallback: use sibling areas near the heading when cards are outside the immediate ancestor tree.
+				if (links.length < maxPerCategory && item.node.parentElement) {
+					const parent = item.node.parentElement;
+					for (const sib of Array.from(parent.children)) {
+						if (sib === item.node) continue;
+						const candidate = uniqueLinks(sib.querySelectorAll('a[href*="/rooms/"]'));
+						if (candidate.length > links.length) {
+							links = candidate;
+						}
+						if (links.length >= maxPerCategory) break;
+					}
 				}
 
 				let count = 0;
@@ -303,10 +335,11 @@ func (s *Scraper) scrapeHomepageCategoriesDirect(ctx context.Context) ([]models.
 			title = "Untitled listing"
 		}
 		listing := models.Listing{
-			Title:  title,
-			URL:    u,
-			Price:  "",
-			Rating: "",
+			Title:    title,
+			URL:      u,
+			Price:    "",
+			Location: extractLocationFromHomeSpan(label),
+			Rating:   "",
 		}
 		listing.Details = map[string]string{
 			"home_span": label,
@@ -672,6 +705,9 @@ func parseRawListings(raw []map[string]string, limit int, spanLabel string) []mo
 			Rating:   strings.TrimSpace(item["rating"]),
 			URL:      u,
 		}
+		if listing.Location == "" && spanLabel != "" {
+			listing.Location = extractLocationFromHomeSpan(spanLabel)
+		}
 		cardDetails := strings.TrimSpace(item["card_details"])
 		if spanLabel != "" || cardDetails != "" {
 			listing.Details = map[string]string{}
@@ -727,10 +763,14 @@ func (s *Scraper) scrapeDetailPageWithRetry(ctx context.Context, listingURL stri
 		var pageText string
 		script := `(() => {
 			const text = (document.body && document.body.innerText) ? document.body.innerText : '';
+			const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim();
+			const titleNode = document.querySelector('h1');
+			const ogTitle = document.querySelector('meta[property="og:title"]');
 			const descNode = document.querySelector('[data-section-id="DESCRIPTION_DEFAULT"] span, [itemprop="description"]');
 			const amenityNodes = Array.from(document.querySelectorAll('[data-testid="amenity-row"], [data-section-id="AMENITIES_DEFAULT"] li'));
 			const amenities = amenityNodes.slice(0, 20).map(n => (n.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
 			return {
+				title: normalize((titleNode && titleNode.textContent) || (ogTitle && ogTitle.getAttribute('content')) || ''),
 				description: descNode ? descNode.textContent.replace(/\s+/g, ' ').trim() : '',
 				amenities: amenities.join(', '),
 				text
@@ -748,6 +788,7 @@ func (s *Scraper) scrapeDetailPageWithRetry(ctx context.Context, listingURL stri
 
 		pageText = payload["text"]
 		details = map[string]string{
+			"title":       strings.TrimSpace(payload["title"]),
 			"description": strings.TrimSpace(payload["description"]),
 			"amenities":   strings.TrimSpace(payload["amenities"]),
 		}
@@ -841,10 +882,18 @@ func (s *Scraper) attachDetails(listingURL string, details map[string]string) {
 	defer s.resultsMu.Unlock()
 	for i := range s.results {
 		if s.results[i].URL == listingURL {
+			if t := strings.TrimSpace(details["title"]); t != "" {
+				if strings.TrimSpace(s.results[i].Title) == "" || strings.EqualFold(strings.TrimSpace(s.results[i].Title), "Untitled listing") {
+					s.results[i].Title = t
+				}
+			}
 			if s.results[i].Details == nil {
 				s.results[i].Details = make(map[string]string)
 			}
 			for k, v := range details {
+				if k == "title" {
+					continue
+				}
 				s.results[i].Details[k] = v
 			}
 			return
@@ -933,12 +982,64 @@ func getDomain(raw string) (string, error) {
 }
 
 func cleanPrice(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
+	raw := strings.TrimSpace(s)
+	if raw == "" {
 		return ""
 	}
-	s = strings.ReplaceAll(s, " ", "")
-	return s
+
+	normalized := strings.Join(strings.Fields(raw), " ")
+	lower := strings.ToLower(normalized)
+	matches := moneyAmountRe.FindAllStringSubmatchIndex(normalized, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+
+	// Preferred source: explicit total shown as "for 2 nights".
+	if idx := strings.Index(lower, "for 2 nights"); idx >= 0 {
+		best := -1
+		for i, m := range matches {
+			if len(m) < 4 {
+				continue
+			}
+			fullEnd := m[1]
+			if fullEnd <= idx {
+				best = i
+			}
+		}
+		if best == -1 {
+			best = len(matches) - 1
+		}
+		amount := normalized[matches[best][2]:matches[best][3]]
+		return fmt.Sprintf("$%s for 2 nights", amount)
+	}
+
+	firstAmount := normalized[matches[0][2]:matches[0][3]]
+	perNight := strings.Contains(lower, "/ night") || strings.Contains(lower, " per night") || strings.Contains(lower, " nightly")
+	if perNight {
+		total, ok := multiplyAmount(firstAmount, 2)
+		if ok {
+			return fmt.Sprintf("$%s for 2 nights", total)
+		}
+	}
+
+	// Fallback: keep first parsed amount but normalize to the requested 2-night format.
+	return fmt.Sprintf("$%s for 2 nights", firstAmount)
+}
+
+func multiplyAmount(raw string, nights int) (string, bool) {
+	clean := strings.ReplaceAll(strings.TrimSpace(raw), ",", "")
+	if clean == "" || nights <= 0 {
+		return "", false
+	}
+	value, err := strconv.ParseFloat(clean, 64)
+	if err != nil {
+		return "", false
+	}
+	total := value * float64(nights)
+	if math.Abs(total-math.Round(total)) < 1e-9 {
+		return strconv.FormatInt(int64(math.Round(total)), 10), true
+	}
+	return strconv.FormatFloat(total, 'f', 2, 64), true
 }
 
 func inferStructuredDetails(text string) map[string]string {
@@ -989,4 +1090,16 @@ func isAirbnbHomeRoot(rawURL string) bool {
 	}
 	path := strings.TrimSpace(u.EscapedPath())
 	return path == "" || path == "/"
+}
+
+func extractLocationFromHomeSpan(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return ""
+	}
+	m := homeCategoryLocationRe.FindStringSubmatch(label)
+	if len(m) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(m[1])
 }
