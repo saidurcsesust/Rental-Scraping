@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -23,6 +24,12 @@ func main() {
 	pagesPerSpan := flag.Int("pages-per-span", 2, "Pages to scrape after each span click")
 	cardsPerPage := flag.Int("cards-per-page", 5, "Number of listing cards to capture per page")
 	headless := flag.Bool("headless", true, "Run browser in headless mode")
+	dbHost := flag.String("db-host", envOrDefault("DB_HOST", ""), "PostgreSQL host (empty disables DB persistence)")
+	dbPort := flag.Int("db-port", envIntOrDefault("DB_PORT", 5432), "PostgreSQL port")
+	dbUser := flag.String("db-user", envOrDefault("DB_USER", "postgres"), "PostgreSQL user")
+	dbPassword := flag.String("db-password", envOrDefault("DB_PASSWORD", "postgres"), "PostgreSQL password")
+	dbName := flag.String("db-name", envOrDefault("DB_NAME", "rental_scraping"), "PostgreSQL database name")
+	dbSSLMode := flag.String("db-sslmode", envOrDefault("DB_SSLMODE", "disable"), "PostgreSQL sslmode")
 	flag.Parse()
 
 	cfg := Config{
@@ -40,6 +47,12 @@ func main() {
 		PagesPerSpan:              *pagesPerSpan,
 		CardsPerPage:              *cardsPerPage,
 		Headless:                  *headless,
+		DBHost:                    *dbHost,
+		DBPort:                    *dbPort,
+		DBUser:                    *dbUser,
+		DBPassword:                *dbPassword,
+		DBName:                    *dbName,
+		DBSSLMode:                 *dbSSLMode,
 	}
 
 	scraper := NewScraper(cfg)
@@ -48,4 +61,23 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("Scrape complete. Output: %s\n", cfg.OutputFile)
+}
+
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func envIntOrDefault(key string, fallback int) int {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return v
 }
