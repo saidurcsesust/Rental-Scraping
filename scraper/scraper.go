@@ -1,14 +1,10 @@
-package main
+package scraper
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"net/url"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -21,29 +17,6 @@ import (
 	_ "github.com/lib/pq"
 	"golang.org/x/time/rate"
 )
-
-type Config struct {
-	SearchURL                 string
-	MaxPages                  int
-	Workers                   int
-	RequestTimeout            time.Duration
-	MaxRetries                int
-	RateLimitPerSecond        float64
-	RateBurst                 int
-	MaxRequestsPerDomain      int
-	MaxTotalRequestsPerDomain int
-	OutputFile                string
-	MaxSpans                  int
-	PagesPerSpan              int
-	CardsPerPage              int
-	Headless                  bool
-	DBHost                    string
-	DBPort                    int
-	DBUser                    string
-	DBPassword                string
-	DBName                    string
-	DBSSLMode                 string
-}
 
 type homeSpan struct {
 	ID    string
@@ -907,183 +880,6 @@ func (s *Scraper) attachDetails(listingURL string, details map[string]string) {
 			return
 		}
 	}
-}
-
-func (s *Scraper) saveResults() error {
-	if len(s.results) == 0 {
-		return errors.New("no listings scraped")
-	}
-
-	groups := make([]categoryGroup, 0)
-	groupIndex := make(map[string]int)
-	for _, listing := range s.results {
-		category := "Uncategorized"
-		if listing.Details != nil {
-			if v := strings.TrimSpace(listing.Details["home_span"]); v != "" {
-				category = v
-			}
-		}
-
-		idx, ok := groupIndex[category]
-		if !ok {
-			idx = len(groups)
-			groupIndex[category] = idx
-			groups = append(groups, categoryGroup{
-				Category: category,
-				Listings: make([]models.Listing, 0, 8),
-			})
-		}
-		groups[idx].Listings = append(groups[idx].Listings, listing)
-	}
-
-	data, err := json.MarshalIndent(groups, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(s.cfg.OutputFile, data, 0o644); err != nil {
-		return err
-	}
-
-	if strings.TrimSpace(s.cfg.DBHost) != "" {
-		if err := s.saveResultsToDB(groups); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (s *Scraper) saveResultsToDB(groups []categoryGroup) error {
-	if err := s.ensureDatabaseExists(); err != nil {
-		return err
-	}
-
-	dsn := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		s.cfg.DBHost,
-		s.cfg.DBPort,
-		s.cfg.DBUser,
-		s.cfg.DBPassword,
-		s.cfg.DBName,
-		s.cfg.DBSSLMode,
-	)
-
-	db, err := sql.Open("postgres", dsn)
-	if err != nil {
-		return fmt.Errorf("open postgres: %w", err)
-	}
-	defer db.Close()
-
-	if err := db.Ping(); err != nil {
-		return fmt.Errorf("ping postgres: %w", err)
-	}
-
-	schema := `
-CREATE TABLE IF NOT EXISTS listings (
-	id BIGSERIAL PRIMARY KEY,
-	title TEXT NOT NULL,
-	price TEXT,
-	location TEXT,
-	rating TEXT,
-	url TEXT NOT NULL UNIQUE,
-	description TEXT
-);`
-	if _, err := db.Exec(schema); err != nil {
-		return fmt.Errorf("create listings table: %w", err)
-	}
-	// Ensure compatibility if an older schema already exists.
-	if _, err := db.Exec(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS id BIGSERIAL`); err != nil {
-		return fmt.Errorf("ensure id column: %w", err)
-	}
-	if _, err := db.Exec(`ALTER TABLE listings ADD COLUMN IF NOT EXISTS description TEXT`); err != nil {
-		return fmt.Errorf("ensure description column: %w", err)
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	stmt, err := tx.Prepare(`
-INSERT INTO listings (title, price, location, rating, url, description)
-VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (url) DO UPDATE
-SET title = EXCLUDED.title,
-	price = EXCLUDED.price,
-	location = EXCLUDED.location,
-	rating = EXCLUDED.rating,
-	description = EXCLUDED.description;
-`)
-	if err != nil {
-		return fmt.Errorf("prepare upsert: %w", err)
-	}
-	defer stmt.Close()
-
-	for _, group := range groups {
-		for _, listing := range group.Listings {
-			description := ""
-			if listing.Details != nil {
-				description = strings.TrimSpace(listing.Details["description"])
-			}
-
-			if _, err := stmt.Exec(
-				listing.Title,
-				listing.Price,
-				listing.Location,
-				listing.Rating,
-				listing.URL,
-				description,
-			); err != nil {
-				return fmt.Errorf("upsert listing %s: %w", listing.URL, err)
-			}
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-
-	fmt.Printf("saved listings to postgres db=%s table=listings count=%d\n", s.cfg.DBName, len(s.results))
-	return nil
-}
-
-func (s *Scraper) ensureDatabaseExists() error {
-	adminDSN := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=postgres sslmode=%s",
-		s.cfg.DBHost,
-		s.cfg.DBPort,
-		s.cfg.DBUser,
-		s.cfg.DBPassword,
-		s.cfg.DBSSLMode,
-	)
-
-	adminDB, err := sql.Open("postgres", adminDSN)
-	if err != nil {
-		return fmt.Errorf("open postgres admin db: %w", err)
-	}
-	defer adminDB.Close()
-
-	if err := adminDB.Ping(); err != nil {
-		return fmt.Errorf("ping postgres admin db: %w", err)
-	}
-
-	dbName := strings.TrimSpace(s.cfg.DBName)
-	if dbName == "" {
-		return errors.New("database name is empty")
-	}
-
-	var exists int
-	if err := adminDB.QueryRow(`SELECT 1 FROM pg_database WHERE datname = $1`, dbName).Scan(&exists); err == nil && exists == 1 {
-		return nil
-	}
-
-	escaped := strings.ReplaceAll(dbName, `"`, `""`)
-	if _, err := adminDB.Exec(fmt.Sprintf(`CREATE DATABASE "%s"`, escaped)); err != nil {
-		return fmt.Errorf("create database %q: %w", dbName, err)
-	}
-	fmt.Printf("created postgres database db=%s\n", dbName)
-	return nil
 }
 
 func buildPaginatedAirbnbURL(base string, page int) string {
