@@ -59,6 +59,22 @@ go mod download
 ```bash
 cp .env.postgres.example .env
 ```
+4. Load `.env` values before running app:
+```bash
+set -a
+source .env
+set +a
+```
+
+You can edit `.env` for custom database values:
+```env
+DB_HOST=127.0.0.1
+DB_PORT=5433
+DB_USER=postgres
+DB_PASSWORD=postgres
+DB_NAME=rental_scraping
+DB_SSLMODE=disable
+```
 
 ## Run PostgreSQL (Docker)
 Start local PostgreSQL using the provided compose file:
@@ -95,7 +111,7 @@ go run . -pages-per-span 2 -cards-per-page 5 -workers 1 -timeout-sec 90
 
 ### Limit run to first N spans (optional)
 ```bash
-go run . -max-spans 3 -pages-per-span 2 -cards-per-page 5 -workers 1 -timeout-sec 90
+go run . -max-spans 3 -pages-per-span 2 -cards-per-page 5 -workers 1 -timeout-sec 60
 ```
 
 ## Insights Screenshot
@@ -129,22 +145,6 @@ Terminal insights report example:
 | `-db-name` | `rental_scraping` | PostgreSQL database name |
 | `-db-sslmode` | `disable` | PostgreSQL SSL mode |
 
-## Environment Variables
-`.env.postgres.example` provides defaults for Docker and app DB connection:
-
-```env
-POSTGRES_DB=rental_scraping
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=postgres
-POSTGRES_PORT=5433
-
-DB_HOST=127.0.0.1
-DB_PORT=5433
-DB_USER=postgres
-DB_PASSWORD=postgres
-DB_NAME=rental_scraping
-DB_SSLMODE=disable
-```
 
 ## Output: CSV
 The scraper writes a single CSV file (default: `airbnb_listings.csv`) with columns:
