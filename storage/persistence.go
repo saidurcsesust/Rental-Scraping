@@ -431,39 +431,49 @@ func printInsightsReport(results []models.Listing) {
 	}
 
 	fmt.Println()
-	fmt.Println("Vacation Rental Market Insights")
-	fmt.Println("================================")
-	fmt.Printf("Total Listings Scraped: %d\n", total)
-	fmt.Printf("Airbnb Listings: %d\n", airbnb)
+	fmt.Println("========================================")
+	fmt.Println("      Vacation Rental Market Insights")
+	fmt.Println("========================================")
+	fmt.Printf("%-28s %d\n", "Total Listings Scraped:", total)
+	fmt.Printf("%-28s %d\n", "Airbnb Listings:", airbnb)
 	if priceCount > 0 {
-		fmt.Printf("Average Price: %.2f\n", avgPrice)
-		fmt.Printf("Minimum Price: %.2f\n", minPrice)
-		fmt.Printf("Maximum Price: %.2f\n", maxPrice)
-		fmt.Println("Most Expensive Property:")
-		fmt.Printf("Title: %s\n", strings.TrimSpace(mostExpensive.Title))
-		fmt.Printf("Price: %.2f\n", maxPrice)
-		fmt.Printf("Location: %s\n", strings.TrimSpace(mostExpensive.Location))
+		fmt.Printf("%-28s $%.2f\n", "Average Price:", avgPrice)
+		fmt.Printf("%-28s $%.2f\n", "Minimum Price:", minPrice)
+		fmt.Printf("%-28s $%.2f\n", "Maximum Price:", maxPrice)
+		fmt.Println()
+		fmt.Println("Most Expensive Property")
+		fmt.Println("----------------------------------------")
+		fmt.Printf("%-12s %s\n", "Title:", strings.TrimSpace(mostExpensive.Title))
+		fmt.Printf("%-12s $%.2f\n", "Price:", maxPrice)
+		fmt.Printf("%-12s %s\n", "Location:", strings.TrimSpace(mostExpensive.Location))
 	} else {
-		fmt.Println("Average Price: N/A")
-		fmt.Println("Minimum Price: N/A")
-		fmt.Println("Maximum Price: N/A")
-		fmt.Println("Most Expensive Property:")
-		fmt.Println("Title: N/A")
-		fmt.Println("Price: N/A")
-		fmt.Println("Location: N/A")
+		fmt.Printf("%-28s N/A\n", "Average Price:")
+		fmt.Printf("%-28s N/A\n", "Minimum Price:")
+		fmt.Printf("%-28s N/A\n", "Maximum Price:")
+		fmt.Println()
+		fmt.Println("Most Expensive Property")
+		fmt.Println("----------------------------------------")
+		fmt.Printf("%-12s N/A\n", "Title:")
+		fmt.Printf("%-12s N/A\n", "Price:")
+		fmt.Printf("%-12s N/A\n", "Location:")
 	}
 
-	fmt.Println("Listings per Location:")
+	fmt.Println()
+	fmt.Println("Listings per Location")
+	fmt.Println("----------------------------------------")
 	for _, item := range locs {
-		fmt.Printf("%s: %d\n", item.Name, item.Count)
+		fmt.Printf("%-30s %d\n", item.Name+":", item.Count)
 	}
 
-	fmt.Println("Top 5 Highest Rated Properties:")
+	fmt.Println()
+	fmt.Println("Top 5 Highest Rated Properties")
+	fmt.Println("----------------------------------------")
 	if len(topRated) == 0 {
 		fmt.Println("N/A")
 		return
 	}
 	for i, item := range topRated {
-		fmt.Printf("%d. %s - %.2f\n", i+1, item.Title, item.Rating)
+		fmt.Printf("%d. %s  (%.2f)\n", i+1, item.Title, item.Rating)
 	}
+	fmt.Println("========================================")
 }
