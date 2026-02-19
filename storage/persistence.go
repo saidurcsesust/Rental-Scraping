@@ -431,49 +431,102 @@ func printInsightsReport(results []models.Listing) {
 	}
 
 	fmt.Println()
-	fmt.Println("========================================")
-	fmt.Println("      Vacation Rental Market Insights")
-	fmt.Println("========================================")
-	fmt.Printf("%-28s %d\n", "Total Listings Scraped:", total)
-	fmt.Printf("%-28s %d\n", "Airbnb Listings:", airbnb)
+	fmt.Println("Vacation Rental Market Insights")
+	fmt.Println()
+
+	summaryRows := make([][]string, 0, 5)
+	summaryRows = append(summaryRows, []string{"Total Listings Scraped", strconv.Itoa(total)})
+	summaryRows = append(summaryRows, []string{"Airbnb Listings", strconv.Itoa(airbnb)})
 	if priceCount > 0 {
-		fmt.Printf("%-28s $%.2f\n", "Average Price:", avgPrice)
-		fmt.Printf("%-28s $%.2f\n", "Minimum Price:", minPrice)
-		fmt.Printf("%-28s $%.2f\n", "Maximum Price:", maxPrice)
-		fmt.Println()
-		fmt.Println("Most Expensive Property")
-		fmt.Println("----------------------------------------")
-		fmt.Printf("%-12s %s\n", "Title:", strings.TrimSpace(mostExpensive.Title))
-		fmt.Printf("%-12s $%.2f\n", "Price:", maxPrice)
-		fmt.Printf("%-12s %s\n", "Location:", strings.TrimSpace(mostExpensive.Location))
+		summaryRows = append(summaryRows, []string{"Average Price", fmt.Sprintf("$%.2f", avgPrice)})
+		summaryRows = append(summaryRows, []string{"Minimum Price", fmt.Sprintf("$%.2f", minPrice)})
+		summaryRows = append(summaryRows, []string{"Maximum Price", fmt.Sprintf("$%.2f", maxPrice)})
 	} else {
-		fmt.Printf("%-28s N/A\n", "Average Price:")
-		fmt.Printf("%-28s N/A\n", "Minimum Price:")
-		fmt.Printf("%-28s N/A\n", "Maximum Price:")
-		fmt.Println()
-		fmt.Println("Most Expensive Property")
-		fmt.Println("----------------------------------------")
-		fmt.Printf("%-12s N/A\n", "Title:")
-		fmt.Printf("%-12s N/A\n", "Price:")
-		fmt.Printf("%-12s N/A\n", "Location:")
+		summaryRows = append(summaryRows, []string{"Average Price", "N/A"})
+		summaryRows = append(summaryRows, []string{"Minimum Price", "N/A"})
+		summaryRows = append(summaryRows, []string{"Maximum Price", "N/A"})
+	}
+	printTable("Summary", []string{"Metric", "Value"}, summaryRows)
+
+	if priceCount > 0 {
+		printTable("Most Expensive Property", []string{"Field", "Value"}, [][]string{
+			{"Title", strings.TrimSpace(mostExpensive.Title)},
+			{"Price", fmt.Sprintf("$%.2f", maxPrice)},
+			{"Location", strings.TrimSpace(mostExpensive.Location)},
+		})
+	} else {
+		printTable("Most Expensive Property", []string{"Field", "Value"}, [][]string{
+			{"Title", "N/A"},
+			{"Price", "N/A"},
+			{"Location", "N/A"},
+		})
 	}
 
-	fmt.Println()
-	fmt.Println("Listings per Location")
-	fmt.Println("----------------------------------------")
+	locationRows := make([][]string, 0, len(locs))
 	for _, item := range locs {
-		fmt.Printf("%-30s %d\n", item.Name+":", item.Count)
+		locationRows = append(locationRows, []string{item.Name, strconv.Itoa(item.Count)})
 	}
+	if len(locationRows) == 0 {
+		locationRows = append(locationRows, []string{"N/A", "0"})
+	}
+	printTable("Listings per Location", []string{"Location", "Count"}, locationRows)
 
-	fmt.Println()
-	fmt.Println("Top 5 Highest Rated Properties")
-	fmt.Println("----------------------------------------")
+	topRows := make([][]string, 0, len(topRated))
 	if len(topRated) == 0 {
-		fmt.Println("N/A")
+		topRows = append(topRows, []string{"N/A", "N/A", "N/A"})
+		printTable("Top 5 Highest Rated Properties", []string{"Rank", "Title", "Rating"}, topRows)
 		return
 	}
 	for i, item := range topRated {
-		fmt.Printf("%d. %s  (%.2f)\n", i+1, item.Title, item.Rating)
+		topRows = append(topRows, []string{
+			strconv.Itoa(i + 1),
+			item.Title,
+			fmt.Sprintf("%.2f", item.Rating),
+		})
 	}
-	fmt.Println("========================================")
+	printTable("Top 5 Highest Rated Properties", []string{"Rank", "Title", "Rating"}, topRows)
+}
+
+func printTable(title string, headers []string, rows [][]string) {
+	fmt.Println(title)
+	widths := make([]int, len(headers))
+	for i, h := range headers {
+		widths[i] = len(h)
+	}
+	for _, row := range rows {
+		for i := 0; i < len(headers) && i < len(row); i++ {
+			if len(row[i]) > widths[i] {
+				widths[i] = len(row[i])
+			}
+		}
+	}
+
+	printBorder := func() {
+		fmt.Print("+")
+		for _, w := range widths {
+			fmt.Print(strings.Repeat("-", w+2))
+			fmt.Print("+")
+		}
+		fmt.Println()
+	}
+	printRow := func(cols []string) {
+		fmt.Print("|")
+		for i := range widths {
+			val := ""
+			if i < len(cols) {
+				val = cols[i]
+			}
+			fmt.Printf(" %-*s |", widths[i], val)
+		}
+		fmt.Println()
+	}
+
+	printBorder()
+	printRow(headers)
+	printBorder()
+	for _, row := range rows {
+		printRow(row)
+	}
+	printBorder()
+	fmt.Println()
 }
