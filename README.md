@@ -26,11 +26,14 @@ A Go-based Airbnb scraping pipeline that:
 ```text
 .
 ├── main.go                     # CLI entrypoint and flag parsing
-├── scraper/
-│   ├── config.go               # Scraper config model
+├── services/
+│   ├── config.go               # Scraper service config model
 │   ├── scraper.go              # Core scraping orchestration + parsing
-│   ├── worker.go               # Concurrent detail worker pool
+│   └── worker.go               # Concurrent detail worker pool
+├── storage/
 │   └── persistence.go          # CSV + PostgreSQL persistence
+├── utils/
+│   └── env.go                  # Environment helper utilities
 ├── models/
 │   └── model.go                # Listing model
 ├── docker-compose.yml          # Local PostgreSQL service
@@ -94,6 +97,12 @@ go run . -pages-per-span 2 -cards-per-page 5 -workers 1 -timeout-sec 90
 ```bash
 go run . -max-spans 3 -pages-per-span 2 -cards-per-page 5 -workers 1 -timeout-sec 90
 ```
+
+## Insights Screenshot
+
+Terminal insights report example:
+
+![Vacation Rental Market Insights](assets/image.png)
 
 
 ## CLI Flags

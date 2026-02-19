@@ -1,4 +1,4 @@
-package scraper
+package services
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"colly-scraper/models"
+	"colly-scraper/storage"
 
 	"github.com/chromedp/chromedp"
 	_ "github.com/lib/pq"
@@ -32,11 +33,6 @@ type categoryListingSeed struct {
 	Label string
 	URL   string
 	Title string
-}
-
-type categoryGroup struct {
-	Category string           `json:"category"`
-	Listings []models.Listing `json:"listings"`
 }
 
 type Scraper struct {
@@ -105,6 +101,19 @@ func (s *Scraper) Start(ctx context.Context) error {
 	wg.Wait()
 
 	return s.saveResults()
+}
+
+func (s *Scraper) saveResults() error {
+	cfg := storage.Config{
+		OutputFile: s.cfg.OutputFile,
+		DBHost:     s.cfg.DBHost,
+		DBPort:     s.cfg.DBPort,
+		DBUser:     s.cfg.DBUser,
+		DBPassword: s.cfg.DBPassword,
+		DBName:     s.cfg.DBName,
+		DBSSLMode:  s.cfg.DBSSLMode,
+	}
+	return storage.SaveResults(s.results, cfg)
 }
 
 func (s *Scraper) scrapeByHomeSpans(ctx context.Context, spans []homeSpan, jobs chan<- detailJob) {

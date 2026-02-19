@@ -1,4 +1,4 @@
-package scraper
+package storage
 
 import (
 	"database/sql"
@@ -7,20 +7,38 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"colly-scraper/models"
 )
 
-func (s *Scraper) saveResults() error {
-	if len(s.results) == 0 {
+type Config struct {
+	OutputFile string
+	DBHost     string
+	DBPort     int
+	DBUser     string
+	DBPassword string
+	DBName     string
+	DBSSLMode  string
+}
+
+type categoryGroup struct {
+	Category string           `json:"category"`
+	Listings []models.Listing `json:"listings"`
+}
+
+func SaveResults(results []models.Listing, cfg Config) error {
+	if len(results) == 0 {
 		return errors.New("no listings scraped")
 	}
 
 	groups := make([]categoryGroup, 0)
 	groupIndex := make(map[string]int)
-	for _, listing := range s.results {
+	for _, listing := range results {
 		category := "Uncategorized"
 		if listing.Details != nil {
 			if v := strings.TrimSpace(listing.Details["home_span"]); v != "" {
@@ -40,21 +58,22 @@ func (s *Scraper) saveResults() error {
 		groups[idx].Listings = append(groups[idx].Listings, listing)
 	}
 
-	if err := s.saveResultsToCSV(groups); err != nil {
+	if err := saveResultsToCSV(groups, cfg); err != nil {
 		return err
 	}
 
-	if strings.TrimSpace(s.cfg.DBHost) != "" {
-		if err := s.saveResultsToDB(groups); err != nil {
+	if strings.TrimSpace(cfg.DBHost) != "" {
+		if err := saveResultsToDB(groups, cfg, len(results)); err != nil {
 			return err
 		}
 	}
 
+	printInsightsReport(results)
 	return nil
 }
 
-func (s *Scraper) saveResultsToCSV(groups []categoryGroup) error {
-	file, err := os.Create(s.cfg.OutputFile)
+func saveResultsToCSV(groups []categoryGroup, cfg Config) error {
+	file, err := os.Create(cfg.OutputFile)
 	if err != nil {
 		return fmt.Errorf("create output csv: %w", err)
 	}
@@ -118,19 +137,19 @@ func (s *Scraper) saveResultsToCSV(groups []categoryGroup) error {
 	return nil
 }
 
-func (s *Scraper) saveResultsToDB(groups []categoryGroup) error {
-	if err := s.ensureDatabaseExists(); err != nil {
+func saveResultsToDB(groups []categoryGroup, cfg Config, resultCount int) error {
+	if err := ensureDatabaseExists(cfg); err != nil {
 		return err
 	}
 
 	dsn := fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		s.cfg.DBHost,
-		s.cfg.DBPort,
-		s.cfg.DBUser,
-		s.cfg.DBPassword,
-		s.cfg.DBName,
-		s.cfg.DBSSLMode,
+		cfg.DBHost,
+		cfg.DBPort,
+		cfg.DBUser,
+		cfg.DBPassword,
+		cfg.DBName,
+		cfg.DBSSLMode,
 	)
 
 	db, err := sql.Open("postgres", dsn)
@@ -139,7 +158,7 @@ func (s *Scraper) saveResultsToDB(groups []categoryGroup) error {
 	}
 	defer db.Close()
 
-	if err := s.pingPostgresWithRetry(db, 10, time.Second); err != nil {
+	if err := pingPostgresWithRetry(db, 10, time.Second); err != nil {
 		return fmt.Errorf("ping postgres: %w", err)
 	}
 
@@ -241,11 +260,11 @@ SET title = EXCLUDED.title,
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 
-	fmt.Printf("saved listings to postgres host=%s port=%d db=%s table=listings count=%d\n", s.cfg.DBHost, s.cfg.DBPort, s.cfg.DBName, len(s.results))
+	fmt.Printf("saved listings to postgres host=%s port=%d db=%s table=listings count=%d\n", cfg.DBHost, cfg.DBPort, cfg.DBName, resultCount)
 	return nil
 }
 
-func (s *Scraper) pingPostgresWithRetry(db *sql.DB, attempts int, delay time.Duration) error {
+func pingPostgresWithRetry(db *sql.DB, attempts int, delay time.Duration) error {
 	if attempts < 1 {
 		attempts = 1
 	}
@@ -260,14 +279,14 @@ func (s *Scraper) pingPostgresWithRetry(db *sql.DB, attempts int, delay time.Dur
 	return lastErr
 }
 
-func (s *Scraper) ensureDatabaseExists() error {
+func ensureDatabaseExists(cfg Config) error {
 	adminDSN := fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=postgres sslmode=%s",
-		s.cfg.DBHost,
-		s.cfg.DBPort,
-		s.cfg.DBUser,
-		s.cfg.DBPassword,
-		s.cfg.DBSSLMode,
+		cfg.DBHost,
+		cfg.DBPort,
+		cfg.DBUser,
+		cfg.DBPassword,
+		cfg.DBSSLMode,
 	)
 
 	adminDB, err := sql.Open("postgres", adminDSN)
@@ -280,7 +299,7 @@ func (s *Scraper) ensureDatabaseExists() error {
 		return fmt.Errorf("ping postgres admin db: %w", err)
 	}
 
-	dbName := strings.TrimSpace(s.cfg.DBName)
+	dbName := strings.TrimSpace(cfg.DBName)
 	if dbName == "" {
 		return errors.New("database name is empty")
 	}
@@ -296,4 +315,155 @@ func (s *Scraper) ensureDatabaseExists() error {
 	}
 	fmt.Printf("created postgres database db=%s\n", dbName)
 	return nil
+}
+
+var numberRe = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)`)
+
+func parsePriceValue(raw string) (float64, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return 0, false
+	}
+	m := numberRe.FindStringSubmatch(strings.ReplaceAll(s, ",", ""))
+	if len(m) < 2 {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(m[1], 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+func parseRatingValue(raw string) (float64, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return 0, false
+	}
+	m := numberRe.FindStringSubmatch(s)
+	if len(m) < 2 {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(m[1], 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+func printInsightsReport(results []models.Listing) {
+	type ratedListing struct {
+		Title    string
+		Rating   float64
+		Location string
+	}
+
+	total := len(results)
+	airbnb := len(results)
+	locationCount := make(map[string]int)
+	priceCount := 0
+	priceSum := 0.0
+	minPrice := 0.0
+	maxPrice := 0.0
+	mostExpensive := models.Listing{}
+	topRated := make([]ratedListing, 0, len(results))
+
+	for _, l := range results {
+		location := strings.TrimSpace(l.Location)
+		if location == "" {
+			location = "Unknown"
+		}
+		locationCount[location]++
+
+		if p, ok := parsePriceValue(l.Price); ok {
+			if priceCount == 0 || p < minPrice {
+				minPrice = p
+			}
+			if priceCount == 0 || p > maxPrice {
+				maxPrice = p
+				mostExpensive = l
+			}
+			priceSum += p
+			priceCount++
+		}
+
+		if r, ok := parseRatingValue(l.Rating); ok {
+			title := strings.TrimSpace(l.Title)
+			if title == "" {
+				title = "Untitled listing"
+			}
+			topRated = append(topRated, ratedListing{
+				Title:    title,
+				Rating:   r,
+				Location: strings.TrimSpace(l.Location),
+			})
+		}
+	}
+
+	avgPrice := 0.0
+	if priceCount > 0 {
+		avgPrice = priceSum / float64(priceCount)
+	}
+
+	type locationItem struct {
+		Name  string
+		Count int
+	}
+	locs := make([]locationItem, 0, len(locationCount))
+	for name, count := range locationCount {
+		locs = append(locs, locationItem{Name: name, Count: count})
+	}
+	sort.Slice(locs, func(i, j int) bool {
+		if locs[i].Count == locs[j].Count {
+			return locs[i].Name < locs[j].Name
+		}
+		return locs[i].Count > locs[j].Count
+	})
+
+	sort.Slice(topRated, func(i, j int) bool {
+		if topRated[i].Rating == topRated[j].Rating {
+			return topRated[i].Title < topRated[j].Title
+		}
+		return topRated[i].Rating > topRated[j].Rating
+	})
+	if len(topRated) > 5 {
+		topRated = topRated[:5]
+	}
+
+	fmt.Println()
+	fmt.Println("Vacation Rental Market Insights")
+	fmt.Println("================================")
+	fmt.Printf("Total Listings Scraped: %d\n", total)
+	fmt.Printf("Airbnb Listings: %d\n", airbnb)
+	if priceCount > 0 {
+		fmt.Printf("Average Price: %.2f\n", avgPrice)
+		fmt.Printf("Minimum Price: %.2f\n", minPrice)
+		fmt.Printf("Maximum Price: %.2f\n", maxPrice)
+		fmt.Println("Most Expensive Property:")
+		fmt.Printf("Title: %s\n", strings.TrimSpace(mostExpensive.Title))
+		fmt.Printf("Price: %.2f\n", maxPrice)
+		fmt.Printf("Location: %s\n", strings.TrimSpace(mostExpensive.Location))
+	} else {
+		fmt.Println("Average Price: N/A")
+		fmt.Println("Minimum Price: N/A")
+		fmt.Println("Maximum Price: N/A")
+		fmt.Println("Most Expensive Property:")
+		fmt.Println("Title: N/A")
+		fmt.Println("Price: N/A")
+		fmt.Println("Location: N/A")
+	}
+
+	fmt.Println("Listings per Location:")
+	for _, item := range locs {
+		fmt.Printf("%s: %d\n", item.Name, item.Count)
+	}
+
+	fmt.Println("Top 5 Highest Rated Properties:")
+	if len(topRated) == 0 {
+		fmt.Println("N/A")
+		return
+	}
+	for i, item := range topRated {
+		fmt.Printf("%d. %s - %.2f\n", i+1, item.Title, item.Rating)
+	}
 }
