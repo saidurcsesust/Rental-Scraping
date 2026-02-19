@@ -1,14 +1,16 @@
 # Rental Scraping
 
 A Go-based Airbnb scraping pipeline that:
-- discovers listing categories from the Airbnb homepage,
+- discovers homepage location/category spans dynamically from Airbnb,
 - scrapes listing cards and detail pages concurrently,
 - saves results to a CSV file,
 - upserts data into PostgreSQL.
 
 ## Features
-- Category-aware scraping from Airbnb homepage sections (for example: `Popular homes in ...`, `Stay in ...`).
-- Fallback scraping when homepage spans are not found.
+- Click-driven scraping from homepage spans (`<a>` links in homepage carousels).
+- Dynamic span discovery via progressive homepage scrolling (captures lazy-loaded sections).
+- Per span workflow: click span -> scrape page 1 + page 2 -> return homepage -> repeat for next span.
+- Category-aware scraping from homepage sections (for example: `Popular homes in ...`, `Stay in ...`).
 - Concurrent detail-page workers.
 - Domain rate limiting and request caps.
 - Retry with backoff for scrape requests and PostgreSQL readiness.
@@ -82,12 +84,23 @@ set +a
 go run .
 ```
 
+### Recommended command (full dynamic homepage spans)
+`-max-spans` optional. Unset it (or keep `0`) to scrape all discovered homepage spans.
+```bash
+go run . -pages-per-span 2 -cards-per-page 5 -workers 1 -timeout-sec 90
+```
+
+### Limit run to first N spans (optional)
+```bash
+go run . -max-spans 3 -pages-per-span 2 -cards-per-page 5 -workers 1 -timeout-sec 90
+```
+
 
 ## CLI Flags
 | Flag | Default | Description |
 |---|---|---|
 | `-search-url` | `https://www.airbnb.com/` | Airbnb homepage URL |
-| `-max-pages` | `3` | Fallback max pages when no spans are found |
+| `-max-pages` | `3` | Legacy fallback setting (not used in click-only homepage flow) |
 | `-workers` | `5` | Number of concurrent detail workers |
 | `-rate` | `1.0` | Requests per second per domain |
 | `-burst` | `2` | Rate limiter burst per domain |
@@ -165,4 +178,18 @@ Rows are upserted on `url` conflict. Existing rows are updated with latest scrap
 docker exec -it rental_scraping_postgres \
   psql -U postgres -d rental_scraping \
   -c "SELECT id, category, title, url, updated_at FROM listings ORDER BY id DESC LIMIT 20;"
+```
+
+### View more columns
+```bash
+docker exec -it rental_scraping_postgres \
+  psql -U postgres -d rental_scraping \
+  -c "SELECT id, category, title, price, location, rating, url, updated_at FROM listings ORDER BY id DESC LIMIT 100;"
+```
+
+### Count rows
+```bash
+docker exec -it rental_scraping_postgres \
+  psql -U postgres -d rental_scraping \
+  -c "SELECT COUNT(*) FROM listings;"
 ```
