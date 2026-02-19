@@ -26,8 +26,9 @@ type homeSpan struct {
 }
 
 var homeCategoryLabelRe = regexp.MustCompile(`(?i)^(popular homes in|available next month in|stay in)\s+.+$`)
-var homeCategoryLocationRe = regexp.MustCompile(`(?i)^(?:popular homes in|available next month in|stay in)\s+(.+)$`)
+var homeCategoryLocationRe = regexp.MustCompile(`(?i)^(?:popular homes in|available next month in|stay in|homes in|places to stay in|check out homes in)\s+(.+)$`)
 var moneyAmountRe = regexp.MustCompile(`\$\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)`)
+var textLocationPatternRe = regexp.MustCompile(`(?i)\b(?:in|at)\s+([A-Z][A-Za-z]+(?:[\s-][A-Z][A-Za-z]+){0,3})\b`)
 
 type categoryListingSeed struct {
 	Label string
@@ -981,6 +982,12 @@ func parseRawListings(raw []map[string]string, limit int, spanLabel string) []mo
 		if listing.Location == "" && spanLabel != "" {
 			listing.Location = extractLocationFromHomeSpan(spanLabel)
 		}
+		if listing.Location == "" {
+			listing.Location = extractLocationFromSearchURL(u)
+		}
+		if listing.Location == "" {
+			listing.Location = inferLocationFromText(title + " " + strings.TrimSpace(item["card_details"]))
+		}
 		cardDetails := strings.TrimSpace(item["card_details"])
 		if spanLabel != "" || cardDetails != "" {
 			listing.Details = map[string]string{}
@@ -1169,6 +1176,19 @@ func (s *Scraper) attachDetails(listingURL string, details map[string]string) {
 				}
 				s.results[i].Details[k] = v
 			}
+			if strings.TrimSpace(s.results[i].Location) == "" {
+				if span := strings.TrimSpace(s.results[i].Details["home_span"]); span != "" {
+					s.results[i].Location = extractLocationFromHomeSpan(span)
+				}
+			}
+			if strings.TrimSpace(s.results[i].Location) == "" {
+				s.results[i].Location = extractLocationFromSearchURL(s.results[i].URL)
+			}
+			if strings.TrimSpace(s.results[i].Location) == "" {
+				s.results[i].Location = inferLocationFromText(
+					strings.TrimSpace(details["title"]) + " " + strings.TrimSpace(details["description"]),
+				)
+			}
 			return
 		}
 	}
@@ -1338,7 +1358,43 @@ func extractLocationFromHomeSpan(label string) string {
 	}
 	m := homeCategoryLocationRe.FindStringSubmatch(label)
 	if len(m) < 2 {
-		return ""
+		lower := strings.ToLower(label)
+		idx := strings.LastIndex(lower, " in ")
+		if idx < 0 || idx+4 >= len(label) {
+			return ""
+		}
+		return strings.TrimSpace(label[idx+4:])
 	}
 	return strings.TrimSpace(m[1])
+}
+
+func extractLocationFromSearchURL(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	for i := 0; i < len(parts)-1; i++ {
+		if parts[i] == "s" && parts[i+1] != "" {
+			loc := strings.ReplaceAll(parts[i+1], "-", " ")
+			return strings.TrimSpace(loc)
+		}
+	}
+	return ""
+}
+
+func inferLocationFromText(text string) string {
+	compact := strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	if compact == "" {
+		return ""
+	}
+	m := textLocationPatternRe.FindStringSubmatch(compact)
+	if len(m) < 2 {
+		return ""
+	}
+	loc := strings.TrimSpace(m[1])
+	if len(loc) < 2 {
+		return ""
+	}
+	return loc
 }
