@@ -96,18 +96,7 @@ func (s *Scraper) Start(ctx context.Context) error {
 	}
 
 	if len(spans) == 0 {
-		fmt.Println("no home spans found, trying direct homepage category extraction")
-		homeListings, homeErr := s.scrapeHomepageCategoriesDirect(ctx)
-		if homeErr != nil {
-			fmt.Printf("direct homepage category extraction failed err=%v\n", homeErr)
-		}
-		if len(homeListings) > 0 {
-			fmt.Printf("direct homepage categories extracted listings=%d\n", len(homeListings))
-			s.enqueueListings(homeListings, jobs)
-		} else {
-			fmt.Println("direct homepage extraction returned no listings, falling back to URL pagination mode")
-			s.scrapeByURLPagination(ctx, jobs)
-		}
+		fmt.Println("no clickable home category spans found; click-only mode skipped scraping")
 	} else {
 		s.scrapeByHomeSpans(ctx, spans, jobs)
 	}
@@ -123,41 +112,225 @@ func (s *Scraper) scrapeByHomeSpans(ctx context.Context, spans []homeSpan, jobs 
 		if strings.TrimSpace(span.Link) == "" {
 			continue
 		}
-		spanProduced := 0
-		remaining := s.cfg.CardsPerPage
-		for page := 0; page < s.cfg.PagesPerSpan; page++ {
-			if remaining <= 0 {
-				break
-			}
-			pageURL := buildPaginatedAirbnbURL(span.Link, page)
-			listings, pageErr := s.scrapeSearchPage(ctx, pageURL, remaining, span.Label)
-			if pageErr != nil {
-				fmt.Printf("span scrape failed id=%q label=%q page=%d err=%v\n", span.ID, span.Label, page+1, pageErr)
-				continue
-			}
-			spanProduced += len(listings)
-			remaining -= len(listings)
-			s.enqueueListings(listings, jobs)
+		clickListings, clickErr := s.scrapeByHomeSpanClickFlow(ctx, span)
+		if clickErr != nil {
+			fmt.Printf("span click-flow failed id=%q label=%q err=%v\n", span.ID, span.Label, clickErr)
 		}
-		if spanProduced == 0 {
-			fallbackBase := buildLabelSearchURL(span.Label)
-			for page := 0; page < s.cfg.PagesPerSpan; page++ {
-				if remaining <= 0 {
+		if len(clickListings) > 0 {
+			s.enqueueListings(clickListings, jobs)
+			fmt.Printf("span done label=%q listings=%d via=click-flow\n", span.Label, len(clickListings))
+		} else {
+			fmt.Printf("span done label=%q listings=0 via=click-flow\n", span.Label)
+		}
+	}
+}
+
+func (s *Scraper) scrapeByHomeSpanClickFlow(ctx context.Context, span homeSpan) ([]models.Listing, error) {
+	homeURL := s.cfg.SearchURL
+	if strings.TrimSpace(homeURL) == "" {
+		homeURL = "https://www.airbnb.com/"
+	}
+	pageCount := s.cfg.PagesPerSpan
+	if pageCount <= 0 {
+		pageCount = 1
+	}
+
+	var listings []models.Listing
+	err := s.withRetry(ctx, homeURL, func(runCtx context.Context) error {
+		tab, cancelTab := chromedp.NewContext(s.browserCtx)
+		defer cancelTab()
+		tabCtx, cancel := context.WithTimeout(tab, s.cfg.RequestTimeout*time.Duration(pageCount+1))
+		defer cancel()
+
+		if err := s.acquire(runCtx, homeURL); err != nil {
+			return err
+		}
+		defer s.release(homeURL)
+
+		if err := chromedp.Run(tabCtx,
+			chromedp.Navigate(homeURL),
+			chromedp.Sleep(6*time.Second),
+		); err != nil {
+			return err
+		}
+
+		var clicked bool
+		clickScript := fmt.Sprintf(`((targetHref, targetLabel, targetID) => {
+			const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim();
+			const lower = (s) => normalize(s).toLowerCase();
+			const hrefNorm = normalize(targetHref);
+			const labelNorm = lower(targetLabel);
+			const idNorm = normalize(targetID);
+
+			for (const btn of document.querySelectorAll('button, [role="button"]')) {
+				const t = lower(btn.textContent);
+				if (t === 'accept all' || t === 'accept' || t === 'agree') {
+					btn.click();
+					break;
+				}
+			}
+
+			const anchors = Array.from(document.querySelectorAll('a[href]'));
+			const isRoomLink = (href) => href.includes('/rooms/');
+			let best = null;
+			let bestScore = -1;
+
+			for (const a of anchors) {
+				const href = normalize(a.href);
+				if (!href || isRoomLink(href)) continue;
+
+				let score = 0;
+				const spanIDs = Array.from(a.querySelectorAll('span[id]')).map(n => normalize(n.id));
+				const texts = [
+					normalize(a.getAttribute('aria-label')),
+					normalize(a.textContent),
+					...Array.from(a.querySelectorAll('span')).map(n => normalize(n.textContent))
+				].filter(Boolean);
+				const textJoined = lower(texts.join(' '));
+
+				if (idNorm && (normalize(a.id) === idNorm || spanIDs.includes(idNorm))) score += 100;
+				if (hrefNorm && href === hrefNorm) score += 90;
+				if (hrefNorm && href.includes(hrefNorm)) score += 70;
+				if (labelNorm && textJoined.includes(labelNorm)) score += 60;
+				if (href.includes('/s/') || href.includes('/homes')) score += 10;
+
+				if (score > bestScore) {
+					best = a;
+					bestScore = score;
+				}
+			}
+
+			if (!best || bestScore < 20) {
+				return false;
+			}
+			best.click();
+			return true;
+		})(%q, %q, %q);`, span.Link, span.Label, span.ID)
+
+		if err := chromedp.Run(tabCtx, chromedp.Evaluate(clickScript, &clicked)); err != nil {
+			return err
+		}
+		if !clicked {
+			return fmt.Errorf("category link not clickable")
+		}
+
+		if err := chromedp.Run(tabCtx, chromedp.Sleep(5*time.Second)); err != nil {
+			return err
+		}
+
+		targetUnique := pageCount * s.cfg.CardsPerPage
+		collected := make([]models.Listing, 0, targetUnique)
+		seenURL := make(map[string]struct{}, targetUnique)
+		for page := 0; page < pageCount; page++ {
+			pageListings, err := s.extractListingsFromCurrentPage(tabCtx, s.cfg.CardsPerPage, span.Label)
+			if err != nil {
+				return err
+			}
+			addedThisPage := 0
+			for _, l := range pageListings {
+				if addedThisPage >= s.cfg.CardsPerPage {
 					break
 				}
-				pageURL := buildPaginatedAirbnbURL(fallbackBase, page)
-				listings, pageErr := s.scrapeSearchPage(ctx, pageURL, remaining, span.Label)
-				if pageErr != nil {
-					fmt.Printf("fallback scrape failed label=%q page=%d err=%v\n", span.Label, page+1, pageErr)
+				if _, ok := seenURL[l.URL]; ok {
 					continue
 				}
-				spanProduced += len(listings)
-				remaining -= len(listings)
-				s.enqueueListings(listings, jobs)
+				seenURL[l.URL] = struct{}{}
+				collected = append(collected, l)
+				addedThisPage++
+			}
+
+			if page == pageCount-1 {
+				break
+			}
+
+			var beforeURL string
+			if err := chromedp.Run(tabCtx, chromedp.Location(&beforeURL)); err != nil {
+				return err
+			}
+
+			var moved bool
+			targetPageNo := page + 2
+			nextScript := fmt.Sprintf(`(() => {
+				const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+				const nav = (node) => {
+					if (!node) return false;
+					const href = (node.getAttribute && node.getAttribute('href')) || node.href || '';
+					if (href) {
+						window.location.assign(href);
+						return true;
+					}
+					node.click();
+					return true;
+				};
+				const isDisabled = (n) => {
+					if (!n) return true;
+					if (n.disabled) return true;
+					const ariaDisabled = (n.getAttribute && n.getAttribute('aria-disabled')) || '';
+					return ariaDisabled.toLowerCase() === 'true';
+				};
+
+				const roots = Array.from(document.querySelectorAll('div[class*="p1j2gy66"], nav')).concat([document]);
+				for (const root of roots) {
+					const pageLinks = Array.from(root.querySelectorAll('a[href], button[role="link"], a[role="link"]'));
+					for (const n of pageLinks) {
+						if (isDisabled(n)) continue;
+						const text = normalize(n.textContent || '');
+						const aria = normalize(n.getAttribute ? n.getAttribute('aria-label') : '');
+						if (text === '%d' || aria === '%d' || aria.includes('page %d')) {
+							if (nav(n)) return true;
+						}
+					}
+					for (const n of pageLinks) {
+						if (isDisabled(n)) continue;
+						const aria = normalize(n.getAttribute ? n.getAttribute('aria-label') : '');
+						if (aria === 'next' || aria.includes('next')) {
+							if (nav(n)) return true;
+						}
+					}
+				}
+				return false;
+			})();`, targetPageNo, targetPageNo, targetPageNo)
+
+			if err := chromedp.Run(tabCtx, chromedp.Evaluate(nextScript, &moved)); err != nil {
+				return err
+			}
+			if !moved {
+				break
+			}
+
+			urlChanged := false
+			for i := 0; i < 10; i++ {
+				var afterURL string
+				if err := chromedp.Run(tabCtx,
+					chromedp.Sleep(700*time.Millisecond),
+					chromedp.Location(&afterURL),
+				); err != nil {
+					return err
+				}
+				if strings.TrimSpace(afterURL) != "" && afterURL != beforeURL {
+					urlChanged = true
+					break
+				}
+			}
+			if !urlChanged {
+				fmt.Printf("span pagination click had no URL change label=%q from=%q\n", span.Label, beforeURL)
+			}
+			if err := chromedp.Run(tabCtx, chromedp.Sleep(2*time.Second)); err != nil {
+				return err
 			}
 		}
-		fmt.Printf("span done label=%q listings=%d\n", span.Label, spanProduced)
+
+		if len(collected) < targetUnique {
+			fmt.Printf("span click-flow unique shortfall label=%q wanted=%d got=%d\n", span.Label, targetUnique, len(collected))
+		}
+		listings = collected
+		_ = chromedp.Run(tabCtx, chromedp.Navigate(homeURL), chromedp.Sleep(2*time.Second))
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	return listings, nil
 }
 
 func (s *Scraper) scrapeByURLPagination(ctx context.Context, jobs chan<- detailJob) {
@@ -373,13 +546,15 @@ func (s *Scraper) collectHomeSpans(ctx context.Context) ([]homeSpan, error) {
 			}
 
 			const anchors = Array.from(document.querySelectorAll('a[href]'));
+			const headingLinks = Array.from(document.querySelectorAll('h1 a[href], h2 a[href], h3 a[href], [role="heading"] a[href]'));
 			const out = [];
 			const seen = new Set();
-			for (const a of anchors) {
+			const consider = (a) => {
 				const href = (a.href || '').trim();
-				if (!href) continue;
-				if (!/airbnb\./i.test(href)) continue;
-				if (href.includes('/login') || href.includes('/signup')) continue;
+				if (!href) return;
+				if (!/airbnb\./i.test(href)) return;
+				if (href.includes('/login') || href.includes('/signup')) return;
+				if (!href.includes('/s/') || !href.includes('/homes')) return;
 
 				const spanTexts = Array.from(a.querySelectorAll('span'))
 					.map(sp => (sp.textContent || '').replace(/\s+/g, ' ').trim())
@@ -400,24 +575,46 @@ func (s *Scraper) collectHomeSpans(ctx context.Context) ([]homeSpan, error) {
 				if (!label) {
 					label = candidates.find(c => c.length > 3 && c.length <= 120) || '';
 				}
-				if (!label) continue;
+				if (!label) return;
 
 				const lower = label.toLowerCase();
-				if (blocked.has(lower)) continue;
-				if (!categoryRe.test(label) && !href.includes('/s/')) continue;
+				if (blocked.has(lower)) return;
 
 				const id = (a.id || a.getAttribute('data-testid') || a.querySelector('span[id]')?.id || 'no-id').trim();
-				const key = id + '|' + href;
-				if (seen.has(key)) continue;
+				const key = href;
+				if (seen.has(key)) return;
 				seen.add(key);
 				out.push({ id, label, link: href });
+			};
+
+			for (const a of headingLinks) {
+				consider(a);
+			}
+			for (const a of anchors) {
+				consider(a);
 			}
 			return out;
 		})();`
 
 		return chromedp.Run(tabCtx,
 			chromedp.Navigate(pageURL),
-			chromedp.Sleep(6*time.Second),
+			chromedp.Sleep(5*time.Second),
+			chromedp.Evaluate(`window.scrollTo(0, 0);`, nil),
+			chromedp.Sleep(1200*time.Millisecond),
+			chromedp.Evaluate(`window.scrollTo(0, Math.max(900, window.innerHeight * 1));`, nil),
+			chromedp.Sleep(1200*time.Millisecond),
+			chromedp.Evaluate(`window.scrollTo(0, Math.max(1800, window.innerHeight * 2));`, nil),
+			chromedp.Sleep(1200*time.Millisecond),
+			chromedp.Evaluate(`window.scrollTo(0, Math.max(2700, window.innerHeight * 3));`, nil),
+			chromedp.Sleep(1200*time.Millisecond),
+			chromedp.Evaluate(`window.scrollTo(0, Math.max(3600, window.innerHeight * 4));`, nil),
+			chromedp.Sleep(1200*time.Millisecond),
+			chromedp.Evaluate(`window.scrollTo(0, Math.max(4500, window.innerHeight * 5));`, nil),
+			chromedp.Sleep(1200*time.Millisecond),
+			chromedp.Evaluate(`window.scrollTo(0, Math.max(5400, window.innerHeight * 6));`, nil),
+			chromedp.Sleep(1200*time.Millisecond),
+			chromedp.Evaluate(`window.scrollTo(0, 0);`, nil),
+			chromedp.Sleep(1800*time.Millisecond),
 			chromedp.Evaluate(script, &raw),
 		)
 	})
@@ -455,18 +652,11 @@ func (s *Scraper) collectHomeSpans(ctx context.Context) ([]homeSpan, error) {
 		}
 	}
 	listingLike := make([]homeSpan, 0, len(spans))
-	categoryLike := make([]homeSpan, 0, len(spans))
 	for _, sp := range spans {
-		if isHomeCategoryLabel(sp.Label) {
-			categoryLike = append(categoryLike, sp)
-		}
 		l := strings.ToLower(sp.Link)
 		if strings.Contains(l, "/s/") || strings.Contains(l, "/homes") {
 			listingLike = append(listingLike, sp)
 		}
-	}
-	if len(categoryLike) > 0 {
-		return categoryLike, nil
 	}
 	if len(listingLike) > 0 {
 		return listingLike, nil
@@ -659,6 +849,99 @@ func (s *Scraper) scrapeSearchPage(ctx context.Context, pageURL string, limit in
 	}
 
 	return parseRawListings(raw, limit, spanLabel), nil
+}
+
+func (s *Scraper) extractListingsFromCurrentPage(tabCtx context.Context, limit int, spanLabel string) ([]models.Listing, error) {
+	seen := make(map[string]models.Listing, limit)
+	candidateLimit := limit * 8
+	if candidateLimit < limit {
+		candidateLimit = limit
+	}
+	for attempt := 0; attempt < 5; attempt++ {
+		var raw []map[string]string
+		script := fmt.Sprintf(`((maxItems) => {
+			const out = [];
+			const cards = Array.from(document.querySelectorAll('[data-testid="card-container"], [itemprop="itemListElement"], article'));
+			const seenHref = new Set();
+			const pushCard = (card, href, fallbackTitle) => {
+				if (!href || seenHref.has(href)) return;
+				seenHref.add(href);
+				const text = (card?.innerText || '').replace(/\s+/g, ' ').trim();
+				const titleNode = card ? card.querySelector('[data-testid="listing-card-title"], [itemprop="name"]') : null;
+				const locationNode = card ? card.querySelector('[data-testid="listing-card-subtitle"], [data-testid="listing-card-name"]') : null;
+				const priceNode = card ? card.querySelector('[data-testid="price-availability-row"]') : null;
+				const detailNode = card ? card.querySelector('[data-testid="listing-card-subtitle"]') : null;
+				const ratingNode = card ? card.querySelector('[aria-label*="rated"], [aria-label*="Rating"], [data-testid="review-score"]') : null;
+				const priceMatch = text.match(/\$\s?\d[\d,]*/);
+				const ratingMatch = text.match(/([0-5]\.\d{1,2})/);
+				out.push({
+					url: href,
+					title: ((titleNode?.textContent || fallbackTitle || '')).replace(/\s+/g, ' ').trim(),
+					price: (priceNode?.textContent || (priceMatch ? priceMatch[0] : '')).replace(/\s+/g, ' ').trim(),
+					location: (locationNode?.textContent || '').replace(/\s+/g, ' ').trim(),
+					rating: (ratingNode?.textContent || (ratingMatch ? ratingMatch[1] : '')).replace(/\s+/g, ' ').trim(),
+					card_details: (detailNode?.textContent || text || '').replace(/\s+/g, ' ').trim()
+				});
+			};
+
+			// First pass: card containers
+			for (const card of cards) {
+				const a = card.querySelector('a[href*="/rooms/"]');
+				const href = a ? (a.href || '').trim() : '';
+				pushCard(card, href, '');
+			}
+
+			// Second pass: any room links present in DOM
+			const links = Array.from(document.querySelectorAll('a[href*="/rooms/"]'));
+			for (const a of links) {
+				const href = (a.href || '').trim();
+				const host = a.closest('[data-testid="card-container"], article, [itemprop="itemListElement"]');
+				pushCard(host, href, (a.getAttribute('aria-label') || '').trim());
+			}
+
+			// Third pass: parse embedded HTML payload URLs if still short
+			if (out.length < maxItems) {
+				const html = (document.documentElement && document.documentElement.innerHTML) ? document.documentElement.innerHTML : '';
+				const roomPattern = new RegExp('(?:https?://www\\\\.airbnb\\\\.com)?/rooms/(\\\\d+)', 'g');
+				const matches = html.match(roomPattern) || [];
+				for (const m of matches) {
+					const idMatch = m.match(new RegExp('/rooms/(\\\\d+)'));
+					if (!idMatch || !idMatch[1]) continue;
+					const href = 'https://www.airbnb.com/rooms/' + idMatch[1];
+					pushCard(null, href, '');
+					if (out.length >= maxItems) break;
+				}
+			}
+
+			if (out.length > maxItems) return out.slice(0, maxItems);
+			return out;
+		})(%d);`, candidateLimit)
+
+		if err := chromedp.Run(tabCtx, chromedp.Evaluate(script, &raw)); err != nil {
+			return nil, err
+		}
+		for _, l := range parseRawListings(raw, candidateLimit, spanLabel) {
+			if _, ok := seen[l.URL]; ok {
+				continue
+			}
+			seen[l.URL] = l
+		}
+		if len(seen) >= candidateLimit {
+			break
+		}
+		if err := chromedp.Run(tabCtx,
+			chromedp.Evaluate(`window.scrollBy(0, Math.max(900, window.innerHeight));`, nil),
+			chromedp.Sleep(1200*time.Millisecond),
+		); err != nil {
+			return nil, err
+		}
+	}
+
+	out := make([]models.Listing, 0, len(seen))
+	for _, l := range seen {
+		out = append(out, l)
+	}
+	return out, nil
 }
 
 func parseRawListings(raw []map[string]string, limit int, spanLabel string) []models.Listing {
