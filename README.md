@@ -48,7 +48,7 @@ A Go-based Airbnb scraping pipeline that:
 ## Setup
 1. Clone and enter the repository.
 ```bash
-git clone <your-repository-url>
+git clone https://github.com/saidurcsesust/Rental-Scraping.git
 cd Rental-Scraping
 ```
 2. Download Go modules:
