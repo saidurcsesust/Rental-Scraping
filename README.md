@@ -3,24 +3,17 @@
 A Go-based Airbnb scraping pipeline that:
 - discovers homepage location/category spans dynamically from Airbnb,
 - scrapes listing cards and detail pages concurrently,
-- saves results to a CSV file,
-- upserts data into PostgreSQL.
 
 ## Features
 - Click-driven scraping from homepage spans (`<a>` links in homepage carousels).
-- Dynamic span discovery via progressive homepage scrolling (captures lazy-loaded sections).
 - Per span workflow: click span -> scrape page 1 + page 2 -> return homepage -> repeat for next span.
 - Category-aware scraping from homepage sections (for example: `Popular homes in ...`, `Stay in ...`).
 - Concurrent detail-page workers.
 - Domain rate limiting and request caps.
-- Retry with backoff for scrape requests and PostgreSQL readiness.
 - Dual persistence:
   - flat CSV export for easy sharing/analysis,
   - PostgreSQL upsert for durable storage.
 
-## Tech Stack
-- Go (`chromedp`, `lib/pq`)
-- PostgreSQL 16 (Docker Compose)
 
 ## Project Structure
 ```text
@@ -40,10 +33,7 @@ A Go-based Airbnb scraping pipeline that:
 └── .env.postgres.example       # Example DB environment values
 ```
 
-## Prerequisites
-- Go installed (module declares `go 1.25.5` in `go.mod`).
-- Docker + Docker Compose (for local PostgreSQL).
-- Linux environment with Chrome/Chromium support required by `chromedp`.
+
 
 ## Setup
 1. Clone and enter the repository.
@@ -93,26 +83,11 @@ docker compose down
 ```
 
 ## Run the Scraper
-
-### Option A: Use environment variables (recommended)
 ```bash
-set -a
-source .env.postgres.example
-set +a
-
-go run .
+./run.sh
 ```
 
-### Recommended command (full dynamic homepage spans)
-`-max-spans` optional. Unset it (or keep `0`) to scrape all discovered homepage spans.
-```bash
-go run . -pages-per-span 2 -cards-per-page 5 -workers 1 -timeout-sec 90
-```
 
-### Limit run to first N spans (optional)
-```bash
-go run . -max-spans 3 -pages-per-span 2 -cards-per-page 5 -workers 1 -timeout-sec 60
-```
 
 ## Insights Screenshot
 
@@ -146,22 +121,6 @@ Terminal insights report example:
 | `-db-sslmode` | `disable` | PostgreSQL SSL mode |
 
 
-## Output: CSV
-The scraper writes a single CSV file (default: `airbnb_listings.csv`) with columns:
-- `category`
-- `title`
-- `price`
-- `location`
-- `rating`
-- `url`
-- `description`
-- `details_json` (JSON object encoded as string)
-
-Example usage with tools:
-```bash
-head -n 5 airbnb_listings.csv
-```
-
 ## Output: PostgreSQL
 If `DB_HOST` (or `-db-host`) is set, data is also saved to PostgreSQL.
 
@@ -179,21 +138,13 @@ If `DB_HOST` (or `-db-host`) is set, data is also saved to PostgreSQL.
 - `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
 - `updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
 
-### Upsert behavior
-Rows are upserted on `url` conflict. Existing rows are updated with latest scraped values.
 
-### Verify inserted rows
-```bash
-docker exec -it rental_scraping_postgres \
-  psql -U postgres -d rental_scraping \
-  -c "SELECT id, category, title, url, updated_at FROM listings ORDER BY id DESC LIMIT 20;"
-```
 
 ### View more columns
 ```bash
 docker exec -it rental_scraping_postgres \
   psql -U postgres -d rental_scraping \
-  -c "SELECT id, category, title, price, location, rating, url, updated_at FROM listings ORDER BY id DESC LIMIT 100;"
+  -c "SELECT id, category, title, price, location, rating, url, updated_at FROM listings ORDER BY id LIMIT 100;"
 ```
 
 ### Count rows
