@@ -29,6 +29,7 @@ var homeCategoryLabelRe = regexp.MustCompile(`(?i)^(popular homes in|available n
 var homeCategoryLocationRe = regexp.MustCompile(`(?i)^(?:popular homes in|available next month in|stay in|homes in|places to stay in|check out homes in)\s+(.+)$`)
 var moneyAmountRe = regexp.MustCompile(`\$\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)`)
 var textLocationPatternRe = regexp.MustCompile(`(?i)\b(?:in|at)\s+([A-Z][A-Za-z]+(?:[\s-][A-Z][A-Za-z]+){0,3})\b`)
+var titleMetaTokenRe = regexp.MustCompile(`(?i)(★|^\d(?:\.\d+)?$|guest|bedroom|bedrooms|bed|beds|bath|baths|studio|superhost|new|review|reviews|night|nights)`)
 
 type categoryListingSeed struct {
 	Label string
@@ -776,6 +777,15 @@ func (s *Scraper) scrapeSearchPage(ctx context.Context, pageURL string, limit in
 
 		script := fmt.Sprintf(`((maxItems) => {
 			const out = [];
+			const findTitleFromLink = (a) => {
+				let node = a;
+				for (let depth = 0; depth < 10 && node; depth++) {
+					const t = node.querySelector ? node.querySelector('div[data-testid="listing-card-title"], [data-testid="listing-card-title"]') : null;
+					if (t && t.textContent) return t.textContent.replace(/\s+/g, ' ').trim();
+					node = node.parentElement;
+				}
+				return '';
+			};
 			const cards = Array.from(document.querySelectorAll('[data-testid="card-container"], [itemprop="itemListElement"], article'));
 			for (const card of cards) {
 				if (out.length >= maxItems) break;
@@ -783,7 +793,7 @@ func (s *Scraper) scrapeSearchPage(ctx context.Context, pageURL string, limit in
 				const href = a ? (a.href || '') : '';
 				if (!href) continue;
 				const text = (card.innerText || '').replace(/\s+/g, ' ').trim();
-				const titleNode = card.querySelector('[data-testid="listing-card-title"], [itemprop="name"]');
+				const titleNode = card.querySelector('div[data-testid="listing-card-title"], [data-testid="listing-card-title"], [itemprop="name"]');
 				const locationNode = card.querySelector('[data-testid="listing-card-subtitle"], [data-testid="listing-card-name"]');
 				const priceNode = card.querySelector('[data-testid="price-availability-row"]');
 				const detailNode = card.querySelector('[data-testid="listing-card-subtitle"]');
@@ -792,7 +802,7 @@ func (s *Scraper) scrapeSearchPage(ctx context.Context, pageURL string, limit in
 				const ratingMatch = text.match(/([0-5]\.\d{1,2})/);
 				out.push({
 					url: href,
-					title: (titleNode?.textContent || '').replace(/\s+/g, ' ').trim(),
+					title: (titleNode?.textContent || findTitleFromLink(a) || '').replace(/\s+/g, ' ').trim(),
 					price: (priceNode?.textContent || (priceMatch ? priceMatch[0] : '')).replace(/\s+/g, ' ').trim(),
 					location: (locationNode?.textContent || '').replace(/\s+/g, ' ').trim(),
 					rating: (ratingNode?.textContent || (ratingMatch ? ratingMatch[1] : '')).replace(/\s+/g, ' ').trim(),
@@ -812,13 +822,13 @@ func (s *Scraper) scrapeSearchPage(ctx context.Context, pageURL string, limit in
 					const text = (host.innerText || a.innerText || '').replace(/\s+/g, ' ').trim();
 					const priceMatch = text.match(/\$\s?\d[\d,]*/);
 					const ratingMatch = text.match(/([0-5]\.\d{1,2})/);
-					out.push({
-						url: href,
-						title: (a.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim(),
-						price: (priceMatch ? priceMatch[0] : '').replace(/\s+/g, ' ').trim(),
-						location: '',
-						rating: (ratingMatch ? ratingMatch[1] : '').replace(/\s+/g, ' ').trim(),
-						card_details: text
+						out.push({
+							url: href,
+							title: (findTitleFromLink(a) || a.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim(),
+							price: (priceMatch ? priceMatch[0] : '').replace(/\s+/g, ' ').trim(),
+							location: '',
+							rating: (ratingMatch ? ratingMatch[1] : '').replace(/\s+/g, ' ').trim(),
+							card_details: text
 					});
 				}
 			}
@@ -870,27 +880,37 @@ func (s *Scraper) extractListingsFromCurrentPage(tabCtx context.Context, limit i
 	for attempt := 0; attempt < 5; attempt++ {
 		var raw []map[string]string
 		script := fmt.Sprintf(`((maxItems) => {
-			const out = [];
-			const cards = Array.from(document.querySelectorAll('[data-testid="card-container"], [itemprop="itemListElement"], article'));
-			const seenHref = new Set();
-			const pushCard = (card, href, fallbackTitle) => {
-				if (!href || seenHref.has(href)) return;
-				seenHref.add(href);
-				const text = (card?.innerText || '').replace(/\s+/g, ' ').trim();
-				const titleNode = card ? card.querySelector('[data-testid="listing-card-title"], [itemprop="name"]') : null;
-				const locationNode = card ? card.querySelector('[data-testid="listing-card-subtitle"], [data-testid="listing-card-name"]') : null;
-				const priceNode = card ? card.querySelector('[data-testid="price-availability-row"]') : null;
-				const detailNode = card ? card.querySelector('[data-testid="listing-card-subtitle"]') : null;
-				const ratingNode = card ? card.querySelector('[aria-label*="rated"], [aria-label*="Rating"], [data-testid="review-score"]') : null;
-				const priceMatch = text.match(/\$\s?\d[\d,]*/);
+				const out = [];
+				const cards = Array.from(document.querySelectorAll('[data-testid="card-container"], [itemprop="itemListElement"], article'));
+				const seenHref = new Set();
+				const findTitleFromLink = (a) => {
+					let node = a;
+					for (let depth = 0; depth < 10 && node; depth++) {
+						const t = node.querySelector ? node.querySelector('div[data-testid="listing-card-title"], [data-testid="listing-card-title"]') : null;
+						if (t && t.textContent) return t.textContent.replace(/\s+/g, ' ').trim();
+						node = node.parentElement;
+					}
+					return '';
+				};
+				const pushCard = (card, href, fallbackTitle) => {
+					if (!href || seenHref.has(href)) return;
+					seenHref.add(href);
+					const text = (card?.innerText || '').replace(/\s+/g, ' ').trim();
+					const linkNode = card ? card.querySelector('a[href*="/rooms/"]') : null;
+					const titleNode = card ? card.querySelector('div[data-testid="listing-card-title"], [data-testid="listing-card-title"], [itemprop="name"]') : null;
+					const locationNode = card ? card.querySelector('[data-testid="listing-card-subtitle"], [data-testid="listing-card-name"]') : null;
+					const priceNode = card ? card.querySelector('[data-testid="price-availability-row"]') : null;
+					const detailNode = card ? card.querySelector('[data-testid="listing-card-subtitle"]') : null;
+					const ratingNode = card ? card.querySelector('[aria-label*="rated"], [aria-label*="Rating"], [data-testid="review-score"]') : null;
+					const priceMatch = text.match(/\$\s?\d[\d,]*/);
 				const ratingMatch = text.match(/([0-5]\.\d{1,2})/);
-				out.push({
-					url: href,
-					title: ((titleNode?.textContent || fallbackTitle || '')).replace(/\s+/g, ' ').trim(),
-					price: (priceNode?.textContent || (priceMatch ? priceMatch[0] : '')).replace(/\s+/g, ' ').trim(),
-					location: (locationNode?.textContent || '').replace(/\s+/g, ' ').trim(),
-					rating: (ratingNode?.textContent || (ratingMatch ? ratingMatch[1] : '')).replace(/\s+/g, ' ').trim(),
-					card_details: (detailNode?.textContent || text || '').replace(/\s+/g, ' ').trim()
+					out.push({
+						url: href,
+						title: ((titleNode?.textContent || findTitleFromLink(linkNode) || fallbackTitle || '')).replace(/\s+/g, ' ').trim(),
+						price: (priceNode?.textContent || (priceMatch ? priceMatch[0] : '')).replace(/\s+/g, ' ').trim(),
+						location: (locationNode?.textContent || '').replace(/\s+/g, ' ').trim(),
+						rating: (ratingNode?.textContent || (ratingMatch ? ratingMatch[1] : '')).replace(/\s+/g, ' ').trim(),
+						card_details: (detailNode?.textContent || text || '').replace(/\s+/g, ' ').trim()
 				});
 			};
 
@@ -903,11 +923,11 @@ func (s *Scraper) extractListingsFromCurrentPage(tabCtx context.Context, limit i
 
 			// Second pass: any room links present in DOM
 			const links = Array.from(document.querySelectorAll('a[href*="/rooms/"]'));
-			for (const a of links) {
-				const href = (a.href || '').trim();
-				const host = a.closest('[data-testid="card-container"], article, [itemprop="itemListElement"]');
-				pushCard(host, href, (a.getAttribute('aria-label') || '').trim());
-			}
+				for (const a of links) {
+					const href = (a.href || '').trim();
+					const host = a.closest('[data-testid="card-container"], article, [itemprop="itemListElement"]');
+					pushCard(host, href, (findTitleFromLink(a) || a.getAttribute('aria-label') || '').trim());
+				}
 
 			// Third pass: parse embedded HTML payload URLs if still short
 			if (out.length < maxItems) {
@@ -972,8 +992,9 @@ func parseRawListings(raw []map[string]string, limit int, spanLabel string) []mo
 		if title == "" {
 			title = "Untitled listing"
 		}
+		cleanTitle, titleExtra := splitListingTitleAndDescription(title)
 		listing := models.Listing{
-			Title:    title,
+			Title:    cleanTitle,
 			Price:    cleanPrice(item["price"]),
 			Location: strings.TrimSpace(item["location"]),
 			Rating:   strings.TrimSpace(item["rating"]),
@@ -989,7 +1010,7 @@ func parseRawListings(raw []map[string]string, limit int, spanLabel string) []mo
 			listing.Location = inferLocationFromText(title + " " + strings.TrimSpace(item["card_details"]))
 		}
 		cardDetails := strings.TrimSpace(item["card_details"])
-		if spanLabel != "" || cardDetails != "" {
+		if spanLabel != "" || cardDetails != "" || titleExtra != "" {
 			listing.Details = map[string]string{}
 			if spanLabel != "" {
 				listing.Details["home_span"] = spanLabel
@@ -997,10 +1018,45 @@ func parseRawListings(raw []map[string]string, limit int, spanLabel string) []mo
 			if cardDetails != "" {
 				listing.Details["card_details"] = cardDetails
 			}
+			if titleExtra != "" {
+				listing.Details["description"] = titleExtra
+			}
 		}
 		listings = append(listings, listing)
 	}
 	return listings
+}
+
+func splitListingTitleAndDescription(rawTitle string) (string, string) {
+	title := strings.Join(strings.Fields(strings.TrimSpace(rawTitle)), " ")
+	if title == "" {
+		return "Untitled listing", ""
+	}
+
+	parts := strings.Split(title, "·")
+	if len(parts) == 1 {
+		return title, ""
+	}
+
+	mainTitle := strings.TrimSpace(parts[0])
+	extra := make([]string, 0, len(parts)-1)
+	for i := 1; i < len(parts); i++ {
+		p := strings.TrimSpace(parts[i])
+		if p == "" {
+			continue
+		}
+		if titleMetaTokenRe.MatchString(p) {
+			extra = append(extra, p)
+			continue
+		}
+		// Keep non-metadata segments in title to avoid over-trimming.
+		mainTitle = strings.TrimSpace(mainTitle + " - " + p)
+	}
+
+	if mainTitle == "" {
+		mainTitle = "Untitled listing"
+	}
+	return mainTitle, strings.Join(extra, " | ")
 }
 
 func parseCategorySeeds(raw []map[string]string) []categoryListingSeed {
@@ -1163,8 +1219,20 @@ func (s *Scraper) attachDetails(listingURL string, details map[string]string) {
 	for i := range s.results {
 		if s.results[i].URL == listingURL {
 			if t := strings.TrimSpace(details["title"]); t != "" {
+				clean, extra := splitListingTitleAndDescription(t)
 				if strings.TrimSpace(s.results[i].Title) == "" || strings.EqualFold(strings.TrimSpace(s.results[i].Title), "Untitled listing") {
-					s.results[i].Title = t
+					s.results[i].Title = clean
+				}
+				if extra != "" {
+					if s.results[i].Details == nil {
+						s.results[i].Details = make(map[string]string)
+					}
+					prev := strings.TrimSpace(s.results[i].Details["description"])
+					if prev == "" {
+						s.results[i].Details["description"] = extra
+					} else if !strings.Contains(prev, extra) {
+						s.results[i].Details["description"] = prev + " | " + extra
+					}
 				}
 			}
 			if s.results[i].Details == nil {
@@ -1188,6 +1256,17 @@ func (s *Scraper) attachDetails(listingURL string, details map[string]string) {
 				s.results[i].Location = inferLocationFromText(
 					strings.TrimSpace(details["title"]) + " " + strings.TrimSpace(details["description"]),
 				)
+			}
+			// Final title normalization to avoid rating/bed/bath tokens in title cells.
+			normalizedTitle, extra := splitListingTitleAndDescription(strings.TrimSpace(s.results[i].Title))
+			s.results[i].Title = normalizedTitle
+			if extra != "" {
+				prev := strings.TrimSpace(s.results[i].Details["description"])
+				if prev == "" {
+					s.results[i].Details["description"] = extra
+				} else if !strings.Contains(prev, extra) {
+					s.results[i].Details["description"] = prev + " | " + extra
+				}
 			}
 			return
 		}
